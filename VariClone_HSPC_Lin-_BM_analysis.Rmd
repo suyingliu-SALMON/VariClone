@@ -1,0 +1,175 @@
+---
+title: "Confetti simulation with data"
+author: "Suying Liu"
+date: "2022-09-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("dplyr")
+library("tidyverse")
+setwd("/Users/suyingliu/Documents/R_Confetti/")
+
+filter_cohort <- function(a, b){
+   cohort <- filter(a, Exp == Cohort_info[b,2] & Genotype == Cohort_info[b,3] & Ana_Cohort %in% Cohort_num[,b])
+   return(cohort)
+}
+
+```
+
+```{r import data}
+#Change here if your column sequence or type has change
+Col_type <- c("character","integer", "integer", rep("character", 5), rep("numeric", 44))
+
+#Load data
+all_data <- read.csv("Summary_of_all_Confetti_data/Sum_of_Stem_BM_analysis.csv", stringsAsFactors=FALSE, header=TRUE, colClasses= Col_type)
+
+Cohort_info <- read.csv("Summary_of_all_Confetti_data/Confetti_Cohort_information.csv", stringsAsFactors=FALSE, header=TRUE)
+
+Cohort_num <- read.csv("Summary_of_all_Confetti_data/Cohort_numbers.csv", stringsAsFactors=FALSE, header=TRUE)
+
+grp_num <- 8
+#Exp to analyze
+A28 <- filter_cohort(all_data, grp_num)
+export_title <- paste0(Cohort_info[grp_num,2],"_", Cohort_info[grp_num,3], "_",Cohort_info[grp_num,6])
+
+```
+
+```{r organize Confetti data}
+prob <- qnorm(0.98)
+all_mouse_tag <- data.frame(A28$Mouse.Tag)
+Color_freq_all <- all_mouse_tag
+colnames(Color_freq_all) <- c("Mouse.Tag")
+Confetti_nor_del <- all_mouse_tag
+colnames(Confetti_nor_del) <- c("Mouse.Tag")
+
+cell_type <- c("LK", "LSK", "LTHSC", "STHSC", "MPP2", "MPP3", "MPP4_CD48")
+length <- length(cell_type)
+i <- NULL
+
+for (i in c(1:length)) {
+  RFP_label <- paste0(rep(cell_type[i]),"_RFP")
+  YFP_label <- paste0(rep(cell_type[i]),"_YFP")
+  Sum_label <- paste0(rep(cell_type[i]),"_Sum")
+  
+  RFP_raw <- A28[[RFP_label]]
+  YFP_raw <- A28[[YFP_label]]
+  Sum <- RFP_raw + YFP_raw
+
+  Confetti_freq <- data.frame(A28$Mouse.Tag, RFP_raw, YFP_raw, Sum)  
+  colnames(Confetti_freq) <- c("Mouse.Tag", RFP_label, YFP_label, Sum_label)
+    
+  # Confetti normalized to 100%
+  RFP_100 <- RFP_raw/Sum*100
+  
+  # delete RFP-100% outliers with SD
+  
+  Upper <- mean(RFP_100, na.rm = TRUE) + prob*sd(RFP_100, na.rm = TRUE)
+  Lower <- mean(RFP_100, na.rm = TRUE) - prob*sd(RFP_100, na.rm = TRUE)
+  table_temp <- data.frame(A28$Mouse.Tag, RFP_100)
+  table_temp <- filter(table_temp, (RFP_100 > Lower) & (RFP_100 < Upper))
+  colnames(table_temp) <- c("Mouse.Tag", RFP_label)
+  
+  list_temp <- list(Confetti_nor_del,table_temp)
+  Confetti_nor_del <- list_temp  %>% reduce(full_join, by ='Mouse.Tag')
+  
+  #delete the also those outlier raw data
+  Confetti_freq <- filter(Confetti_freq, Mouse.Tag %in% table_temp$Mouse.Tag)
+  list_temp <- list(Color_freq_all, Confetti_freq)
+  Color_freq_all <- list_temp  %>% reduce(full_join, by ='Mouse.Tag')
+  
+}
+
+Cohort <- data.frame(A28$Ana_Cohort, A28$Mouse.Tag) # change here for Cohort or Ana_Cohort
+colnames(Cohort) <- c("Cohort", "Mouse.Tag")
+list_temp <- list(Color_freq_all, Cohort)
+Color_freq_all <- list_temp  %>% reduce(full_join, by ='Mouse.Tag')
+```
+
+```{r subset data}
+sd_list_all <- NULL
+Cell_num_list_all <- NULL
+mouse_num_list <- NULL
+
+# n is group number
+Cohort_list <- unique(Cohort$Cohort)
+n <- length(Cohort_list)
+
+for (i in c(1:n)) {
+  #all month data
+  print(i)
+  mouse.sub.raw <- filter(Color_freq_all, Cohort == Cohort_list[i])
+  
+  sd_list <- NULL
+  Cell_num_list <- NULL
+  a <- NULL
+  mouse_num <- NULL
+ 
+  for (a in c(1:length)) {
+    RFP_label <- paste0(rep(cell_type[a]),"_RFP")
+    YFP_label <- paste0(rep(cell_type[a]),"_YFP")
+    Sum_label <- paste0(rep(cell_type[a]),"_Sum")
+
+    month_data <- data.frame(mouse.sub.raw$Mouse.Tag, mouse.sub.raw[[RFP_label]], mouse.sub.raw[[YFP_label]], mouse.sub.raw[[Sum_label]])
+    colnames(month_data) <- c("Mouse.Tag", "RFP", "YFP", "Sum")
+    S_nor <- month_data$Sum
+    #print(cell_type[a])
+    #print(length(month_data$Sum))
+    #print(S_nor)
+    
+    #filter raw outlier
+    Upper <- mean(S_nor, na.rm = TRUE) + prob*sd(S_nor, na.rm = TRUE)
+    Lower <- mean(S_nor, na.rm = TRUE) - prob*sd(S_nor, na.rm = TRUE)
+    month_data <- filter(month_data, (Sum > Lower) & (Sum < Upper))
+    #print(length(month_data$Sum))
+    
+    month_data.nor <- month_data[,2:3]/month_data$Sum*100
+    month_data.nor <- cbind(month_data$Mouse.Tag, month_data.nor)
+    colnames(month_data.nor) <- c("Mouse.Tag", "RFP", "YFP")
+    
+    #filter 100% outlier
+    R_nor <- month_data.nor$RFP
+    
+    Upper <- mean(R_nor, na.rm = TRUE) + prob*sd(R_nor, na.rm = TRUE)
+    Lower <- mean(R_nor, na.rm = TRUE) - prob*sd(R_nor, na.rm = TRUE)
+    month_data.nor <- filter(month_data.nor, (RFP > Lower) & (RFP < Upper))
+    
+    length_nor <- length(month_data.nor$Mouse.Tag)
+    #print(length_nor)
+    
+    if (length_nor >= 5) {
+    sd <- sd(month_data.nor$RFP)
+    mean <- mean(month_data.nor$RFP)
+    
+    sd_final_RFP <- -2*log10(sd[1])+4+log10(mean[1]*0.01*(1-0.01*mean[1]))+0.722461462
+    
+    month_data <- filter(month_data, Mouse.Tag %in% month_data.nor$Mouse.Tag)
+    Con_Sum <- mean(month_data$Sum)
+    
+    Cell_num <- log10(10^sd_final_RFP/Con_Sum*100)
+    
+    sd_list <- c(sd_list, sd)
+    Cell_num_list <- c(Cell_num_list, Cell_num)
+    mouse_num <- c(mouse_num,length_nor)
+
+    }else{
+      sd_list <- c(sd_list, "NA")
+      Cell_num_list <- c(Cell_num_list," NA")
+      mouse_num <- c(mouse_num, " NA")
+
+    }
+  }
+  sd_list_all <- rbind(sd_list_all, sd_list)
+  Cell_num_list_all <- cbind(Cell_num_list_all, Cell_num_list)
+  mouse_num_list <- cbind(mouse_num_list, mouse_num)
+    
+}
+
+write.csv(Cell_num_list_all, paste0(export_title,"_cell_number_list.csv"))
+write.csv(mouse_num_list, paste0(export_title,"_mouse_number_list.csv"))
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

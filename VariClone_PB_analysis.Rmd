@@ -1,0 +1,242 @@
+---
+title: "Confetti PB analysis"
+author: "Suying Liu"
+date: "2022-09-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library("dplyr")
+library("tidyverse")
+setwd("/Users/suyingliu/Documents/R_Confetti/")
+
+filter_cohort <- function(a, b){
+   cohort <- filter(a, Exp == Cohort_info[b,2] & Genotype == Cohort_info[b,3] & Ana_Cohort %in% na.omit(Cohort_num[,b]), Stage == Cohort_info[b,5])
+   return(cohort)
+}
+#rename monthly cell type data
+cell_type_mth_name <- function(a){
+  paste(c("Mouse.Tag", paste0("B_month",rep(a)), paste0("M_month",rep(a)), paste0("T_month",rep(a)), paste0("Gr1_month",rep(a)), paste0("Gr_2_month",rep(a)), paste0("Gr_3_month",rep(a))))
+}
+
+
+```
+
+```{r import data}
+#Change here if your column sequence or type has change
+Col_type <- c("character","integer", "integer", "character","character", "integer","character","integer","character","character", rep("numeric", 28))
+
+#Load data
+all_data <- read.csv("Summary_of_all_Confetti_data/Sum_of_all_PB.csv", stringsAsFactors=FALSE, header=TRUE, colClasses= Col_type)
+
+Cohort_info <- read.csv("Summary_of_all_Confetti_data/Confetti_Cohort_information.csv", stringsAsFactors=FALSE, header=TRUE)
+
+Cohort_num <- read.csv("Summary_of_all_Confetti_data/Cohort_numbers.csv", stringsAsFactors=FALSE, header=TRUE)
+
+BM_list <- read.csv("BM_list.csv")
+BM_list <- unlist(BM_list)
+names(BM_list) <- "Mouse.Tag"
+
+grp_num <- 9
+#Exp to analyze
+A28 <- filter_cohort(all_data, grp_num)
+A28 <- filter(A28, Mouse.Tag %in% BM_list)
+export_title <- paste0(Cohort_info[grp_num,2],"_", Cohort_info[grp_num,3], "_",Cohort_info[grp_num,6])
+
+maxi_month <- max(A28$Month, na.rm = TRUE) 
+#month to process
+month <- c(1:maxi_month)
+```
+
+```{r normalize cell type freq to 100%}
+all_mouse_tag <- data.frame(A28$Mouse.Tag, A28$Ana_Cohort)
+all_mouse_tag <- unique(all_mouse_tag)
+colnames(all_mouse_tag) <- c("Mouse.Tag", "Cohort")
+
+Cellfreq_nor_all <- all_mouse_tag
+Cellfreq_nor_all_filt <- all_mouse_tag
+
+mouse.tag_list <- NULL
+i <- NULL
+
+#change here if sequence of cell type changes
+column_subset <- c(5, 11:16)
+
+for (i in month){
+  month_data <- filter(A28, Month == i)
+  cell_freq <- month_data[,column_subset]
+  colnames(cell_freq) <- c("Mouse.Tag", "B_freq", "M_freq", "T_freq", "Gr1_freq", "Gr_2_freq", "Gr_3_freq")
+  
+  Sum_freq_month <- rowSums(cell_freq[,2:4])
+  
+  cell_freq_nor <- NULL
+  cell_freq_nor$Mouse.Tag <- cell_freq$Mouse.Tag
+  cell_freq_nor <- cbind(cell_freq_nor, cell_freq[,2:7]/Sum_freq_month*100)
+  
+  cell_freq_nor <- filter(cell_freq_nor, M_freq < 50)
+  
+  M_nor <- cell_freq_nor$M_freq
+  B_nor <- cell_freq_nor$B_freq
+  T_nor <- cell_freq_nor$T_freq
+  # filter Myeloid or B-cell out-liners
+  
+  iqr = IQR(M_nor, na.rm = TRUE, type = 6)
+  Upper_M = (iqr * 1.5) + quantile(M_nor, na.rm = TRUE, type = 6)[4]
+  Lower_M = quantile(M_nor, na.rm = TRUE, type = 6)[2] - (iqr * 1.5)
+  
+  iqr = IQR(B_nor, na.rm = TRUE, type = 6) 
+  Upper_B = (iqr * 1.5) + quantile(B_nor, na.rm = TRUE, type = 6)[4]
+  Lower_B = quantile(B_nor, na.rm = TRUE, type = 6)[2] - (iqr * 1.5)
+
+  cell_freq_nor_del <- filter(cell_freq_nor, (M_freq > Lower_M) & (M_freq < Upper_M) & (B_freq > Lower_B) & (B_freq < Upper_B))
+
+  colnames(cell_freq_nor_del) <- cell_type_mth_name(i)
+  Cell_freq_list_nor_del <- list(Cellfreq_nor_all_filt, cell_freq_nor_del)
+  Cellfreq_nor_all_filt <- Cell_freq_list_nor_del  %>% reduce(full_join, by ='Mouse.Tag')
+  
+  #generate a list of mouse tag that has normal PB cell type distribution
+  mouse.tag_list[[i]] <- cell_freq_nor_del$Mouse.Tag  
+  
+  #regular without deletion data
+  colnames(cell_freq_nor) <- cell_type_mth_name(i)
+  Cell_freq_list_nor <- list(Cellfreq_nor_all, cell_freq_nor)
+  Cellfreq_nor_all <- Cell_freq_list_nor  %>% reduce(full_join, by ='Mouse.Tag')
+}
+write_csv(Cellfreq_nor_all,paste0(export_title,"_cell_freq_normal.csv"))
+write_csv(Cellfreq_nor_all_filt,paste0(export_title,"_cell_freq_normal_del.csv"))
+```
+
+```{r organize Confetti data for A28}
+prob <- qnorm(0.98)
+Cohort_list <- unique(A28$Ana_Cohort)
+n <- length(Cohort_list)
+
+cell_type_list <- c("B", "T", "M")
+m <- NULL
+for (m in c(1:3)) {
+  # CHANGE here for T-cell, B-cell or M-cell
+  cell_type <- cell_type_list[m]
+  RFP_raw <- paste0(rep(cell_type),"_RFP_Raw")
+  YFP_raw <- paste0(rep(cell_type),"_YFP_Raw")
+
+  #Confetti raw data
+  Conf_freq_all <- all_mouse_tag
+  #Confetti data normalized to Sum of Confett
+  Confe_freq_nor_all <- all_mouse_tag
+
+  #Confetti raw data after filtering
+  Conf_freq_all_filt <- all_mouse_tag
+  #Confetti data normalized to Sum of Confett after filtering
+  Confe_freq_nor_all_filt <- all_mouse_tag
+
+  #store the variation from Confetti and the final clone#
+  sd_list_all <- NULL
+  Cell_num_list_all <- NULL
+  mouse_num_list <- NULL
+
+  i <- NULL
+  for (i in month){
+    month_data <- filter(A28, Month == i)
+    month_data <- filter(month_data, Mouse.Tag %in% mouse.tag_list[[i]])
+  
+    Confe_freq <- data.frame(month_data$Mouse.Tag, month_data$Ana_Cohort, month_data[[RFP_raw]], month_data[[YFP_raw]])
+    colnames(Confe_freq) <- c("Mouse.Tag", "Cohort", "RFP", "YFP")
+    Confetti_Sum <- rowSums(Confe_freq[,3:4])
+  
+    # R+Y = 100%
+    Confe_freq_nor <- data.frame(Confe_freq[,1:2], Confe_freq[,3]/Confetti_Sum*100)
+    
+    #Confetti data normalized to Sum of Confett
+    colnames(Confe_freq_nor) <- c("Mouse.Tag", "Cohort", paste0("R_month",rep(i)))
+    list_temp_1 <- list(Confe_freq_nor_all,Confe_freq_nor[, c(1,3)])
+    Confe_freq_nor_all <- list_temp_1  %>% reduce(full_join, by ='Mouse.Tag')
+    
+    #Confetti raw data
+    Confe_freq$Sum <- Confetti_Sum
+    colnames(Confe_freq) <- c("Mouse.Tag", "Cohort", paste0("R_month",rep(i)), paste0("Y_month",rep(i)), paste0("Sum_",rep(i)))
+    list_temp_2 <- list(Conf_freq_all,Confe_freq[, c(1,3:5)])
+    Conf_freq_all <- list_temp_2  %>% reduce(full_join, by ='Mouse.Tag')
+    
+    colnames(Confe_freq_nor) <- c("Mouse.Tag", "Cohort", "RFP")
+    # delete outliers with SD
+    R_nor <- Confe_freq_nor$RFP
+    Upper <- mean(R_nor, na.rm = TRUE) + prob*sd(R_nor, na.rm = TRUE)
+    Lower <- mean(R_nor, na.rm = TRUE) - prob*sd(R_nor, na.rm = TRUE)
+    Confe_freq_nor <- filter(Confe_freq_nor, (RFP > Lower) & (RFP < Upper))
+    
+    #Confetti raw data after filtering
+    Confe_freq <- filter(Confe_freq, Mouse.Tag %in% Confe_freq_nor$Mouse.Tag)
+    list_temp_3 <- list(Conf_freq_all_filt, Confe_freq[, c(1,3:5)])
+    Conf_freq_all_filt <- list_temp_3  %>% reduce(full_join, by ='Mouse.Tag')
+  
+    #Confetti data normalized to Sum of Confett after filtering
+    colnames(Confe_freq_nor) <- c("Mouse.Tag", "Cohort", paste0("R_month",rep(i)))
+    list_temp_4 <- list(Confe_freq_nor_all_filt, Confe_freq_nor[, c(1,3)])
+    Confe_freq_nor_all_filt <- list_temp_4  %>% reduce(full_join, by ='Mouse.Tag')
+    
+    a <- NULL
+    sd_list <- NULL
+    Cell_num_list <- NULL
+    mouse_num <- NULL
+    
+    for (a in c(1:n)) {
+      colnames(Confe_freq) <- c("Mouse.Tag", "Cohort", "RFP", "YFP", "Sum")
+      colnames(Confe_freq_nor) <- c("Mouse.Tag", "Cohort", "RFP")
+      
+      #filter the mice that belong to particular cohort
+      cohort_subset <- filter(Confe_freq, Cohort == Cohort_list[a])
+      
+      #filter raw outlier
+      S_nor <- cohort_subset$Sum
+      Upper <- mean(S_nor, na.rm = TRUE) + prob*sd(S_nor, na.rm = TRUE)
+      Lower <- mean(S_nor, na.rm = TRUE) - prob*sd(S_nor, na.rm = TRUE)
+      cohort_data <- filter(cohort_subset, (Sum > Lower) & (Sum < Upper))
+      
+      #filter 100% outlier
+      #get the mouse in filterd raw data
+      cohort_data_nor <- filter(Confe_freq_nor, Mouse.Tag %in% cohort_data$Mouse.Tag)
+      R_nor <- cohort_data_nor$RFP
+      Upper <- mean(R_nor, na.rm = TRUE) + prob*sd(R_nor, na.rm = TRUE)
+      Lower <- mean(R_nor, na.rm = TRUE) - prob*sd(R_nor, na.rm = TRUE)
+      cohort_data_nor_filt <- filter(cohort_data_nor, (RFP > Lower) & (RFP < Upper))
+      
+      cohort_data_filt <- filter(cohort_data, Mouse.Tag %in% cohort_data_nor_filt$Mouse.Tag)
+      
+      # the mouse number in this cohort
+      ch_ms_num <- length(cohort_data_filt$Mouse.Tag)
+        
+      #Calculate variation and # of progenitors
+      if (ch_ms_num >= 5) {
+        sd <- sd(cohort_data_nor_filt$RFP)
+        mean <- mean(cohort_data_nor_filt$RFP)
+        sd_final_RFP <- -2*log10(sd[1])+4+log10(mean[1]*0.01*(1-0.01*mean[1]))+0.722461462
+        Con_Sum <- mean(cohort_data_filt$Sum)
+        Cell_num <- log10(10^sd_final_RFP/Con_Sum*100)
+        
+        sd_list <- c(sd_list, sd)
+        Cell_num_list <- c(Cell_num_list, Cell_num)
+        mouse_num <- c(mouse_num,ch_ms_num)
+      }else{
+        sd_list <- c(sd_list, "NA")
+        Cell_num_list <- c(Cell_num_list," NA")
+        mouse_num <- c(mouse_num, " NA")
+        }
+    }
+    sd_list_all <- rbind(sd_list_all, sd_list)
+    Cell_num_list_all <- cbind(Cell_num_list_all, Cell_num_list)
+    mouse_num_list <- cbind(mouse_num_list, mouse_num)
+}
+
+  write_csv(Conf_freq_all_filt,paste0(export_title, cell_type,"_Confetti_freq_filter.csv"))
+  write_csv(Confe_freq_nor_all_filt,paste0(export_title, cell_type, "_Confetti_freq_100_filter.csv"))
+  write.csv(sd_list_all, paste0(export_title, cell_type,"_SD_list.csv"))
+  write.csv(Cell_num_list_all, paste0(export_title, cell_type,"_cell_num_list.csv"))
+  write.csv(mouse_num_list, paste0(export_title, cell_type,"_mouse_per_group_list.csv"))
+}
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
